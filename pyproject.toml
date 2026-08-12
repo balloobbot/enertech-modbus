@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "enertech-modbus"
+version = "0.1.0"
+description = "Read an Enertech Solar inverter over Modbus."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "enertech-modbus contributors" }]
+keywords = ["modbus", "enertech", "inverter", "solar", "home-assistant"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Home Automation",
+]
+# The caller injects a ModbusUnit; tmodbus is the backend this is developed against.
+dependencies = ["modbus-connection[tmodbus]>=4.6.1"]
+
+[project.urls]
+Homepage = "https://github.com/balloobbot/enertech-modbus"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.14",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enertech_modbus"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
