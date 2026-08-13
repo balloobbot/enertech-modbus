@@ -115,6 +115,21 @@ depends on it, though, so a refused or timed-out identity read does not hold the
 device back — it is reported as a failed `identity` and retried on the next poll
 until it reads, rather than leaving the serial number permanently unknown.
 
+## Raw register dump
+
+`async_read_raw()` reads every register the device reads and returns it
+undecoded, keyed by address space and address — the payload a bug report wants.
+It covers the setup-only identity registers as well as the polled sub-systems.
+
+```python
+raw = await inverter.async_read_raw()
+raw["holding"]  # {address: value} — everything on this device is FC03
+```
+
+`control` is left out, for the same reason no poll reads it: those registers are
+write-only upstream, so a device that refuses to read them back would fail the
+whole dump. Add them yourself with `await inverter.control.async_read_raw()`.
+
 ## Caveats
 
 - The sixteen command bits of 0x196 are transcribed from the plugin's switch

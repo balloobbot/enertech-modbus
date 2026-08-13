@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from modbus_connection import IllegalDataAddressError
 from modbus_connection.mock import MockModbusUnit
 
 from enertech_modbus import (
@@ -151,3 +152,41 @@ async def test_control_reads_on_demand(inverter: EnertechInverter) -> None:
     assert control.mppt1_on_off is True
     assert control.mppt2_on_off is False
     assert control.spare_3 is False
+
+
+async def test_read_raw_covers_the_setup_only_identity(
+    inverter: EnertechInverter,
+) -> None:
+    """A dump an issue report can use needs identity, not just the poll."""
+    raw = await inverter.async_read_raw()
+
+    assert set(raw) == {"holding"}
+    holding = raw["holding"]
+    assert holding[0x108] == 3  # identity: read at setup, never polled
+    assert holding[0x111] == 240  # grid: polled
+    assert list(holding) == sorted(holding)
+
+
+async def test_read_raw_leaves_control_out(inverter: EnertechInverter) -> None:
+    """No poll reads the write-only block, so no dump asks the device for it."""
+    raw = await inverter.async_read_raw()
+
+    assert 0x196 not in raw["holding"]  # command word
+    assert 0x1A5 not in raw["holding"]  # mode setting
+    assert inverter.control.generator_current_limit is None  # and it stays unread
+
+
+async def test_read_raw_dumps_identity_once_when_the_setup_read_failed(
+    mock_modbus_unit: MockModbusUnit, inverter: EnertechInverter
+) -> None:
+    """A retried identity sits in the poll list; the dump must not read it twice."""
+    mock_modbus_unit.fail_read(0x14, IllegalDataAddressError())
+    await inverter.async_setup()
+    mock_modbus_unit.fail_read(0x14, None)
+    seen = len(mock_modbus_unit.read_events)
+
+    raw = await inverter.async_read_raw()
+
+    reads = [e for e in mock_modbus_unit.read_events[seen:] if e.address == 0x14]
+    assert len(reads) == 1
+    assert raw["holding"][0x108] == 3

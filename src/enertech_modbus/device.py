@@ -122,3 +122,24 @@ class EnertechInverter:
         if "identity" in updated:
             self._polled.remove("identity")  # static: read once, then never again
         return UpdateReport(updated, failed)
+
+    async def async_read_raw(self) -> dict[str, dict[int, int | bool]]:
+        """Every register this device reads, undecoded — for diagnostics.
+
+        The identity registers come along: setup reads them once and a poll
+        leaves them alone, and they are the first thing an issue report is read
+        for. :attr:`control` stays out — nothing here ever reads those
+        registers, so a device that serves them for writing alone would fail the
+        whole dump; read it yourself with ``await inverter.control.async_read_raw()``
+        if you want them anyway. The first call sets the device up. A block the
+        device refuses raises, since there the error is the point.
+        """
+        if self._polled is None:
+            await self.async_setup()
+        assert self._polled is not None  # async_setup() always builds it
+        raw: dict[str, dict[int, int | bool]] = {}
+        for name in dict.fromkeys(("identity", *self._polled)):  # identity may be both
+            component: EnertechComponent = getattr(self, name)
+            for space, values in (await component.async_read_raw()).items():
+                raw.setdefault(space, {}).update(values)
+        return {space: dict(sorted(values.items())) for space, values in raw.items()}
