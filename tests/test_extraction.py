@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from enertech_modbus import EnertechInverter
 
+from .test_read_plan import polled
+
 # Sensor entities: address -> registers it spans.
 SENSOR_REGISTERS = {
     0x108: 1, 0x109: 1, 0x10E: 1, 0x10F: 1,
@@ -35,7 +37,7 @@ COMMAND_BITS = 16  # switch entities, all on 0x196
 def test_every_sensor_register_is_modelled(inverter: EnertechInverter) -> None:
     modelled = {
         resolved.address: resolved.count
-        for component in (*inverter.polled_components, inverter.identity)
+        for component in (*polled(inverter), inverter.identity)
         for resolved in component.resolved_fields.values()
     }
     modelled.pop(0x14)  # the serial number, read by a helper rather than an entity
@@ -57,7 +59,7 @@ def test_every_field_is_writable_only_where_the_plugin_writes(
     inverter: EnertechInverter,
 ) -> None:
     """Sensors are read-only; the numbers, the select and the bits are writable."""
-    for component in (*inverter.polled_components, inverter.identity):
+    for component in (*polled(inverter), inverter.identity):
         for name, resolved in component.resolved_fields.items():
             assert not resolved.field.writable, name
 

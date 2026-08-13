@@ -36,6 +36,7 @@ from .faults import Faults
 from .grid import Grid
 from .identity import Identity
 from .inverter import Inverter
+from .model import UpdateReport
 from .output import Output
 from .solar import Solar
 from .status import Status
@@ -64,4 +65,5 @@ __all__ = [
     "SolarFault",
     "Status",
     "Temperatures",
+    "UpdateReport",
 ]

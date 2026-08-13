@@ -6,10 +6,10 @@ register no field claims, nothing exceeds the 100-register cap the plugin polls
 this device with, and a poll never touches the control registers.
 
 No component declares ``register_ranges`` — the plugin declares no block
-boundaries of its own, so the blocks below are planned from the fields. Members
-of a group merge only where their blocks meet, which is why the run of
-sub-systems from 0x111 to 0x136 becomes one read while the three stragglers at
-the top of the map stay separate.
+boundaries of its own, so the blocks below are planned from the fields. A poll
+plans each sub-system on its own, so blocks merge only within a sub-system;
+adjacent sub-systems no longer share a read the way they did when one pooled
+group planned them all.
 """
 
 from __future__ import annotations
@@ -20,17 +20,40 @@ from modbus_connection.model import Component
 from enertech_modbus import EnertechInverter
 from enertech_modbus.model import MAX_READ_SPAN
 
+POLLED = (
+    "status",
+    "grid",
+    "inverter",
+    "output",
+    "battery",
+    "solar",
+    "energy",
+    "temperatures",
+    "faults",
+)
+
 SETUP_BLOCKS = [(0x14, 4), (0x108, 2)]
+# One sub-system at a time, in poll order — so a block never mixes two of them.
 POLL_BLOCKS = [
     (0x10E, 2),  # status: MPPT mode, inverter mode
-    (0x111, 38),  # grid + inverter + output + battery + DC-DC temperature
+    (0x15F, 4),  # status: the run-time counters, far from the modes
+    (0x111, 10),  # grid
+    (0x11B, 10),  # inverter stage
+    (0x125, 11),  # output
+    (0x130, 6),  # battery
+    (0x224, 1),  # battery: PV charge current
     (0x13B, 13),  # solar
     (0x152, 4),  # energy (two float32)
-    (0x159, 10),  # faults + the run-time counters that follow them
-    (0x169, 1),  # DC-AC temperature
-    (0x222, 1),  # transformer temperature
-    (0x224, 1),  # battery PV charge current
+    (0x136, 1),  # temperatures: DC-DC
+    (0x169, 1),  # temperatures: DC-AC
+    (0x222, 1),  # temperatures: transformer
+    (0x159, 6),  # faults
 ]
+
+
+def polled(inverter: EnertechInverter) -> list[Component]:
+    """The sub-system objects a poll refreshes."""
+    return [getattr(inverter, name) for name in POLLED]
 
 
 def blocks(unit: MockModbusUnit) -> list[tuple[int, int]]:
@@ -74,7 +97,7 @@ async def test_poll_covers_every_polled_field(
     await inverter.async_update()
 
     assert blocks(mock_modbus_unit) == POLL_BLOCKS
-    assert claimed(*inverter.polled_components) <= covered(mock_modbus_unit)
+    assert claimed(*polled(inverter)) <= covered(mock_modbus_unit)
 
 
 async def test_poll_blocks_are_well_formed(
@@ -83,7 +106,7 @@ async def test_poll_blocks_are_well_formed(
     """Holding registers only, within the read cap, and no wasted block edges."""
     await inverter.async_update()
 
-    fields = claimed(*inverter.polled_components, inverter.identity)
+    fields = claimed(*polled(inverter), inverter.identity)
     for event in mock_modbus_unit.read_events:
         assert event.register_type == "holding"
         assert event.count <= MAX_READ_SPAN
@@ -91,10 +114,29 @@ async def test_poll_blocks_are_well_formed(
         assert event.address + event.count - 1 in fields  # nor ends on one
 
 
+async def test_each_block_belongs_to_exactly_one_sub_system(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """What the per-sub-system plan buys: a failing block can only cost one of them.
+
+    The old pooled plan welded grid, inverter, output and battery into a single
+    0x111 read, so whichever of them the device was slow about took the other
+    three down with it.
+    """
+    await inverter.async_setup()
+    mock_modbus_unit.read_events.clear()
+    await inverter.async_update()
+
+    for event in mock_modbus_unit.read_events:
+        touched = set(range(event.address, event.address + event.count))
+        owners = [name for name in POLLED if touched & claimed(getattr(inverter, name))]
+        assert len(owners) == 1, f"block at {event.address:#x} spans {owners}"
+
+
 async def test_poll_does_not_touch_the_control_registers(
     inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
-    """control is write-oriented and deliberately left out of the poll group."""
+    """control is write-oriented and deliberately left out of the poll."""
     await inverter.async_update()
 
     assert not covered(mock_modbus_unit) & claimed(inverter.control)
@@ -115,12 +157,19 @@ async def test_first_update_sets_up_then_polls(
 async def test_poll_reads_70_registers(
     inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
-    """The 55 registers the fields claim, plus 15 spare ones bridged by merges."""
+    """Splitting the pooled group cost nothing: the same 70 registers, in 13 reads.
+
+    The sub-systems that shared the old 0x111 read abut exactly — grid ends at
+    0x11A and the inverter stage starts at 0x11B, and so on to 0x136 — so the
+    pooled read bridged no spare register that the split reads now bridge twice.
+    The 15 spare registers are all inside a single sub-system's span.
+    """
     await inverter.async_setup()
     mock_modbus_unit.read_events.clear()
     await inverter.async_update()
 
-    assert len(claimed(*inverter.polled_components)) == 55
+    assert len(claimed(*polled(inverter))) == 55
+    assert len(mock_modbus_unit.read_events) == 13
     assert sum(event.count for event in mock_modbus_unit.read_events) == 70
 
 
@@ -136,7 +185,7 @@ async def test_control_reads_one_block(
 
 async def test_no_bit_space_is_used(inverter: EnertechInverter) -> None:
     """The device has no coils or discrete inputs; 0x196's bits are packed."""
-    for component in (*inverter.polled_components, inverter.identity, inverter.control):
+    for component in (*polled(inverter), inverter.identity, inverter.control):
         assert component.register_space == "holding"
         assert component.coil_ranges is None
         assert component.discrete_ranges is None
