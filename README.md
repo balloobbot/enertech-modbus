@@ -38,8 +38,10 @@ the inverter.
 
 - **Set up once, then poll.** `identity` cannot change while the unit runs, so
   `async_setup()` reads it once (2 reads); `async_update()` then refreshes the
-  nine polled sub-systems in **8 block reads totalling 70 registers**, pooled
-  across sub-systems wherever their blocks meet.
+  nine polled sub-systems in **13 block reads totalling 70 registers**. Each
+  sub-system is planned on its own, which costs no extra registers here — the
+  sub-systems that used to share a pooled read abut exactly — and keeps one
+  failing block from reaching the others.
 - `control` is **not polled**. The upstream plugin declares those registers as
   write-only entities and never reads them back, so neither does a poll here —
   call `await inverter.control.async_update()` yourself first if you want to read
@@ -92,6 +94,26 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+## Partial updates
+
+A poll reads each sub-system independently, the way the integration reads its
+blocks: one slow or refused block does not take the rest of the poll with it.
+`async_update()` returns an `UpdateReport` — a failed sub-system keeps its
+previous values, does not notify its listeners, and is listed by attribute name
+with its error, while every other sub-system refreshes and notifies once the
+whole poll is done. Only a dead link (`ModbusConnectionError`) raises:
+
+```python
+report = await inverter.async_update()
+for name, error in report.failed.items():
+    print(f"{name} kept its previous values: {error}")
+```
+
+`identity` is not part of this: it is read once at setup. Nothing in the poll
+depends on it, though, so a refused or timed-out identity read does not hold the
+device back — it is reported as a failed `identity` and retried on the next poll
+until it reads, rather than leaving the serial number permanently unknown.
 
 ## Caveats
 
