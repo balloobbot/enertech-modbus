@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from modbus_connection import ModbusUnit
 
 # Every component attribute a poll refreshes, in read order. identity is absent:
-# setup reads it once. control is absent because the plugin never reads it back.
+# setup reads it once, and it only joins the list while that read is outstanding.
+# control is absent because the plugin this map comes from never reads it back.
 _POLLED = (
     "status",
     "grid",
@@ -76,10 +77,19 @@ class EnertechInverter:
     async def async_setup(self) -> None:
         """Read what cannot change while the unit runs, and settle the poll list.
 
-        A failure leaves the device unset up, so the next update tries again.
+        The poll does not need identity — no register map here depends on it — so
+        a refused or timed-out identity read does not hold the device back: it
+        joins the poll list instead and is retried until it reads. Only the link
+        itself failing leaves the device unset up, for the next call to try again.
         """
-        await self.identity.async_update()
-        self._polled = list(_POLLED)
+        polled = list(_POLLED)
+        try:
+            await self.identity.async_update()
+        except ModbusConnectionError:
+            raise
+        except ModbusError:
+            polled.insert(0, "identity")
+        self._polled = polled
 
     async def async_update(self) -> UpdateReport:
         """Refresh every polled sub-system, one at a time.
@@ -109,4 +119,6 @@ class EnertechInverter:
         for name in updated:
             fresh: EnertechComponent = getattr(self, name)
             fresh.notify()
+        if "identity" in updated:
+            self._polled.remove("identity")  # static: read once, then never again
         return UpdateReport(updated, failed)

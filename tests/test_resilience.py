@@ -104,6 +104,38 @@ async def test_a_two_block_component_fails_whole(
     assert inverter.status.inverter_run_time == 1234
 
 
+async def test_a_failed_identity_read_does_not_hold_the_poll_back(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """Nothing in the poll depends on identity, so it must not gate setup."""
+    mock_modbus_unit.fail_read(0x14, ModbusTimeoutError("no serial"))
+    report = await inverter.async_update()
+
+    assert set(report.failed) == {"identity"}
+    assert inverter.identity.serial_number is None
+    assert inverter.battery.capacity == 87  # the rest of the device still read
+
+
+async def test_identity_is_retried_until_it_reads_then_dropped(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """A transient identity failure must not latch a permanent "unknown"."""
+    mock_modbus_unit.fail_read(0x14, ModbusTimeoutError("no serial"))
+    await inverter.async_update()
+
+    mock_modbus_unit.fail_read(0x14, None)  # the device answers again
+    report = await inverter.async_update()
+    assert report.complete
+    assert "identity" in report.updated
+    assert inverter.identity.serial_number == "ENT12345"
+
+    # Read once, then never again: identity leaves the poll list.
+    mock_modbus_unit.read_events.clear()
+    report = await inverter.async_update()
+    assert "identity" not in report.updated
+    assert not any(event.address == 0x14 for event in mock_modbus_unit.read_events)
+
+
 async def test_a_dead_link_during_setup_raises_and_retries(
     inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
