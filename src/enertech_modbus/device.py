@@ -133,6 +133,8 @@ class EnertechInverter:
         whole dump; read it yourself with ``await inverter.control.async_read_raw()``
         if you want them anyway. The first call sets the device up. A block the
         device refuses raises, since there the error is the point.
+
+        The fields refresh, but no listener fires: a download is not a poll.
         """
         if self._polled is None:
             await self.async_setup()
@@ -140,6 +142,6 @@ class EnertechInverter:
         raw: dict[str, dict[int, int | bool]] = {}
         for name in dict.fromkeys(("identity", *self._polled)):  # identity may be both
             component: EnertechComponent = getattr(self, name)
-            for space, values in (await component.async_read_raw()).items():
+            for space, values in (await component.async_read_raw(notify=False)).items():
                 raw.setdefault(space, {}).update(values)
         return {space: dict(sorted(values.items())) for space, values in raw.items()}

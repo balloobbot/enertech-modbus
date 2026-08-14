@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import pytest
 from modbus_connection import IllegalDataAddressError
 from modbus_connection.mock import MockModbusUnit
@@ -174,6 +176,22 @@ async def test_read_raw_leaves_control_out(inverter: EnertechInverter) -> None:
     assert 0x196 not in raw["holding"]  # command word
     assert 0x1A5 not in raw["holding"]  # mode setting
     assert inverter.control.generator_current_limit is None  # and it stays unread
+
+
+async def test_read_raw_refreshes_without_notifying(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """A download is not a poll: the fields refresh, but no listener fires."""
+    await inverter.async_update()
+    fired: list[str] = []
+    for name in ("identity", *(inverter._polled or ())):
+        getattr(inverter, name).add_update_listener(partial(fired.append, name))
+
+    mock_modbus_unit.holding[0x133] = 42
+    await inverter.async_read_raw()
+
+    assert fired == []
+    assert inverter.battery.capacity == 42
 
 
 async def test_read_raw_dumps_identity_once_when_the_setup_read_failed(
