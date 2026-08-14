@@ -9,7 +9,11 @@ sub-system granularity.
 from __future__ import annotations
 
 import pytest
-from modbus_connection import ModbusConnectionError, ModbusTimeoutError
+from modbus_connection import (
+    IllegalDataAddressError,
+    ModbusConnectionError,
+    ModbusTimeoutError,
+)
 from modbus_connection.mock import MockModbusUnit
 
 from enertech_modbus import EnertechInverter, InverterMode
@@ -19,18 +23,18 @@ async def test_a_failed_component_leaves_the_rest_fresh(
     inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
     await inverter.async_update()
-    before = inverter.grid.voltage_r
+    before = inverter.inverter.voltage_r
 
-    mock_modbus_unit.holding[0x111] = 251  # grid voltage changes on the device
+    mock_modbus_unit.holding[0x11B] = 251  # stage voltage changes on the device
     mock_modbus_unit.holding[0x133] = 61  # so does the battery's state of charge
-    mock_modbus_unit.fail_read(0x111, ModbusTimeoutError("slow grid block"))
+    mock_modbus_unit.fail_read(0x11B, ModbusTimeoutError("slow inverter block"))
     report = await inverter.async_update()
 
     assert not report.complete
-    assert set(report.failed) == {"grid"}
-    assert isinstance(report.failed["grid"], ModbusTimeoutError)
+    assert set(report.failed) == {"inverter"}
+    assert isinstance(report.failed["inverter"], ModbusTimeoutError)
     assert "battery" in report.updated
-    assert inverter.grid.voltage_r == before
+    assert inverter.inverter.voltage_r == before
     assert inverter.battery.capacity == 61
 
 
@@ -42,9 +46,9 @@ async def test_listeners_fire_at_the_end_and_only_for_fresh_components(
     inverter.battery.add_update_listener(
         lambda: seen.append(len(mock_modbus_unit.read_events))
     )
-    inverter.grid.add_update_listener(lambda: seen.append(-1))
+    inverter.inverter.add_update_listener(lambda: seen.append(-1))
 
-    mock_modbus_unit.fail_read(0x111, ModbusTimeoutError("slow grid block"))
+    mock_modbus_unit.fail_read(0x11B, ModbusTimeoutError("slow inverter block"))
     mock_modbus_unit.read_events.clear()
     await inverter.async_update()
 
@@ -59,6 +63,38 @@ async def test_a_dead_link_raises_instead_of_reporting(
     mock_modbus_unit.fail_requests(ModbusConnectionError("link down"))
     with pytest.raises(ModbusConnectionError):
         await inverter.async_update()
+
+
+async def test_a_silent_device_raises_instead_of_walking_every_component(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """An inverter asleep behind a bridge that keeps the socket open.
+
+    Nothing answers, so every sub-system would pay its own timeout. The first
+    one is the probe: it raises, and the poll costs one timeout, not thirteen.
+    """
+    await inverter.async_update()
+    mock_modbus_unit.fail_requests(ModbusTimeoutError("asleep at dusk"))
+    mock_modbus_unit.read_events.clear()
+
+    with pytest.raises(ModbusTimeoutError):
+        await inverter.async_update()
+
+    assert len(mock_modbus_unit.read_events) == 1
+
+
+async def test_a_refusal_answers_for_the_device_so_a_timeout_stays_contained(
+    inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
+) -> None:
+    """An exception response proves the device is there, the same as a refresh."""
+    await inverter.async_update()
+    mock_modbus_unit.fail_read(0x111, IllegalDataAddressError())
+    mock_modbus_unit.fail_read(0x15F, ModbusTimeoutError("slow counters"))
+
+    report = await inverter.async_update()
+
+    assert set(report.failed) == {"grid", "status"}
+    assert "battery" in report.updated
 
 
 async def test_every_component_refreshes_on_a_healthy_device(
@@ -107,7 +143,11 @@ async def test_a_two_block_component_fails_whole(
 async def test_a_failed_identity_read_does_not_hold_the_poll_back(
     inverter: EnertechInverter, mock_modbus_unit: MockModbusUnit
 ) -> None:
-    """Nothing in the poll depends on identity, so it must not gate setup."""
+    """Nothing in the poll depends on identity, so it must not gate setup.
+
+    It is retried at the end of the poll, not the front: leading with the one
+    sub-system already known to fail would let it raise the whole poll.
+    """
     mock_modbus_unit.fail_read(0x14, ModbusTimeoutError("no serial"))
     report = await inverter.async_update()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from modbus_connection import ModbusConnectionError, ModbusError
+from modbus_connection import ModbusConnectionError, ModbusError, ModbusTimeoutError
 
 from .battery import Battery
 from .control import Control
@@ -22,12 +22,14 @@ from .temperatures import Temperatures
 if TYPE_CHECKING:
     from modbus_connection import ModbusUnit
 
-# Every component attribute a poll refreshes, in read order. identity is absent:
-# setup reads it once, and it only joins the list while that read is outstanding.
-# control is absent because the plugin this map comes from never reads it back.
+# Every component attribute a poll refreshes, in read order. grid leads because a
+# timeout on the first one raises: the probe reads in a single block, so a
+# half-read cannot look like a silent device. identity is absent: setup reads it
+# once, and it only joins the list while that read is outstanding. control is
+# absent because the plugin this map comes from never reads it back.
 _POLLED = (
-    "status",
     "grid",
+    "status",
     "inverter",
     "output",
     "battery",
@@ -51,7 +53,9 @@ class EnertechInverter:
         inverter.identity.serial_number
 
     A poll reads each sub-system on its own and reports what it refreshed, so one
-    slow or refused block costs that sub-system's values and nothing else.
+    slow or refused block costs that sub-system's values and nothing else — once
+    the device has answered at all. A timeout before that raises: nothing is
+    there to read.
 
     :attr:`identity` cannot change while the unit runs, so :meth:`async_setup`
     reads it once and a poll leaves it alone. :attr:`control` holds the writable
@@ -79,8 +83,10 @@ class EnertechInverter:
 
         The poll does not need identity — no register map here depends on it — so
         a refused or timed-out identity read does not hold the device back: it
-        joins the poll list instead and is retried until it reads. Only the link
-        itself failing leaves the device unset up, for the next call to try again.
+        joins the poll list instead and is retried until it reads. It joins at the
+        end, never as the probe: a component that just failed is the last one that
+        should be able to raise the whole poll. Only the link itself failing
+        leaves the device unset up, for the next call to try again.
         """
         polled = list(_POLLED)
         try:
@@ -88,7 +94,7 @@ class EnertechInverter:
         except ModbusConnectionError:
             raise
         except ModbusError:
-            polled.insert(0, "identity")
+            polled.append("identity")
         self._polled = polled
 
     async def async_update(self) -> UpdateReport:
@@ -99,7 +105,8 @@ class EnertechInverter:
         previous values while the rest still refresh. Listeners fire only after
         every sub-system has been tried, and only on the ones that refreshed. A
         failure of the link itself raises ``ModbusConnectionError`` instead of
-        reporting.
+        reporting, and so does a timeout with nothing answered yet: a silent
+        device would otherwise cost one timeout per sub-system.
         """
         if self._polled is None:
             await self.async_setup()
@@ -112,6 +119,10 @@ class EnertechInverter:
                 await component.async_update(notify=False)
             except ModbusConnectionError:
                 raise
+            except ModbusTimeoutError as err:
+                if not updated and not failed:
+                    raise  # nothing answered yet: assume the rest times out too
+                failed[name] = err
             except ModbusError as err:
                 failed[name] = err
             else:

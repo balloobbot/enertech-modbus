@@ -21,8 +21,8 @@ from enertech_modbus import EnertechInverter
 from enertech_modbus.model import MAX_READ_SPAN
 
 POLLED = (
-    "status",
     "grid",
+    "status",
     "inverter",
     "output",
     "battery",
@@ -35,9 +35,9 @@ POLLED = (
 SETUP_BLOCKS = [(0x14, 4), (0x108, 2)]
 # One sub-system at a time, in poll order — so a block never mixes two of them.
 POLL_BLOCKS = [
+    (0x111, 10),  # grid: the single-block probe, so it leads
     (0x10E, 2),  # status: MPPT mode, inverter mode
     (0x15F, 4),  # status: the run-time counters, far from the modes
-    (0x111, 10),  # grid
     (0x11B, 10),  # inverter stage
     (0x125, 11),  # output
     (0x130, 6),  # battery
