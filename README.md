@@ -132,6 +132,20 @@ raw["holding"]  # {address: value} — everything on this device is FC03
 write-only upstream, so a device that refuses to read them back would fail the
 whole dump. Add them yourself with `await inverter.control.async_read_raw()`.
 
+## Checking a real inverter
+
+`script/query.py` reads one inverter once and prints everything it has, which is
+the quickest way to see whether a unit is wired and addressed correctly:
+
+```bash
+uv run script/query.py /dev/ttyUSB0 --transport serial --unit 1
+uv run script/query.py 192.168.1.50 --unit 1
+```
+
+It prints the read count as well, so the 13-block poll above is visible against
+real hardware rather than only in the tests. `control` is left out, for the same
+reason no poll reads it.
+
 ## Caveats
 
 - The sixteen command bits of 0x196 are transcribed from the plugin's switch

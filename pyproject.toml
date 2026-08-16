@@ -39,7 +39,7 @@ testpaths = ["tests"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests"]
+files = ["src", "tests", "script"]
 strict = true
 
 [tool.ruff]
